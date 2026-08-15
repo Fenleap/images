@@ -1,0 +1,93 @@
+name: CI
+
+# Builds and tests every image on push and PR. Nothing is published here.
+#
+# The image list is discovered from images/*/Dockerfile, so adding a directory
+# is all it takes for a new image to be covered.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launcher:
+    name: launcher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: shared/launcher/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l shared/launcher)" || { gofmt -d shared/launcher; exit 1; }
+      - name: go vet
+        run: cd shared/launcher && go vet ./...
+      - name: go test
+        run: cd shared/launcher && go test -race ./...
+
+  discover:
+    name: discover images
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          set -euo pipefail
+          images=$(find images -mindepth 2 -maxdepth 2 -name Dockerfile \
+                     -printf '%h\n' | xargs -n1 basename | sort | jq -R . | jq -sc .)
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          echo "Discovered: $images"
+
+  build:
+    name: ${{ matrix.image }}
+    needs: [launcher, discover]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.discover.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # Single-arch and loaded into the daemon, because the smoke test has to
+      # run against a real image and buildx cannot --load a multi-arch result.
+      - name: Build (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/${{ matrix.image }}/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ghcr.io/fenleap/${{ matrix.image }}:ci
+          build-args: VERSION=ci-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # The claim these images make is "there is no shell". Asserting it on the
+      # built artifact is what stops a base-image bump quietly undoing it.
+      - name: Smoke test
+        run: ./shared/test/smoke.sh ghcr.io/fenleap/${{ matrix.image }}:ci ${IMAGE%%-*}
+        env:
+          IMAGE: ${{ matrix.image }}
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/fenleap/${{ matrix.image }}:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0' # report-only: these carry only a client and its libc

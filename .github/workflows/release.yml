@@ -1,0 +1,147 @@
+name: Release
+
+# Publishes ONE image, selected by the tag.
+#
+#   git tag -a mysql-no-shell-v1.0.0 -m "mysql-no-shell 1.0.0"
+#   git push origin mysql-no-shell-v1.0.0
+#
+# Images version independently, so rebuilding one never bumps another. The tag
+# is split into <image>-v<semver>; both halves are validated before anything is
+# built, because both end up in image tags and OCI labels.
+
+on:
+  push:
+    tags: ['*-v*']
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image directory name, e.g. mysql-no-shell
+        required: true
+      version:
+        description: Semver, e.g. 1.0.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: resolve target
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.parse.outputs.image }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read through environment variables, never interpolated into the script,
+      # so a crafted ref cannot inject shell.
+      - id: parse
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_IMAGE: ${{ inputs.image }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_IMAGE:-}" ]; then
+            image="$INPUT_IMAGE"; version="$INPUT_VERSION"
+          else
+            image="${REF_NAME%-v*}"
+            version="${REF_NAME##*-v}"
+          fi
+
+          if [[ ! "$image" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::error::Invalid image name '$image'"; exit 1
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Invalid version '$version' (want <image>-vX.Y.Z)"; exit 1
+          fi
+          # Refuse to publish something this repository does not build.
+          if [ ! -f "images/$image/Dockerfile" ]; then
+            echo "::error::No such image: images/$image/Dockerfile"; exit 1
+          fi
+
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $image $version"
+
+  publish:
+    name: ${{ needs.resolve.outputs.image }} ${{ needs.resolve.outputs.version }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # build provenance attestation
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: shared/launcher/go.mod
+
+      - name: Launcher tests
+        run: cd shared/launcher && go vet ./... && go test ./...
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build and test the amd64 image BEFORE publishing anything. The smoke
+      # test is the release gate: it asserts on the artifact that no shell and
+      # no package manager are present.
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/${{ env.IMAGE }}/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ghcr.io/fenleap/${{ env.IMAGE }}:test
+          build-args: VERSION=${{ env.VERSION }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
+
+      - name: Smoke test (release gate)
+        run: ./shared/test/smoke.sh "ghcr.io/fenleap/${IMAGE}:test" "${IMAGE%%-*}"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/${{ env.IMAGE }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          sbom: true
+          provenance: mode=max
+          tags: |
+            ghcr.io/fenleap/${{ env.IMAGE }}:${{ env.VERSION }}
+            ghcr.io/fenleap/${{ env.IMAGE }}:latest
+          build-args: VERSION=${{ env.VERSION }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/fenleap/${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # A package inherits the repository's visibility on first publish, so a
+      # brand new package can land private even from a public repo. Say so
+      # rather than leaving someone to discover it from a pull failure.
+      - name: Publishing note
+        run: |
+          echo "::notice::Published ghcr.io/fenleap/${IMAGE}:${VERSION}"
+          echo "::notice::If this package is new, set its visibility to Public at" \
+               "https://github.com/orgs/Fenleap/packages/container/${IMAGE}/settings"

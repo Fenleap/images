@@ -1,0 +1,3 @@
+# Build scratch
+*.tar.gz
+.DS_Store
