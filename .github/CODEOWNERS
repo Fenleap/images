@@ -1,0 +1,6 @@
+# Every change to this repository requires review from the owner.
+#
+# These images are published publicly and make a security claim, so the review
+# gate is deliberate: a change that reintroduces a shell, widens the launcher's
+# surface, or bumps a base image is a change to what people are trusting.
+* @Fenleap-Seif
