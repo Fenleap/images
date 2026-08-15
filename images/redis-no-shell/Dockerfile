@@ -71,9 +71,13 @@ ENV HOME=/tmp \
     REDISCLI_HISTFILE=/dev/null
 
 ARG VERSION=dev
+# The client version, discovered from the built binary by the release workflow
+# and fed back in. Empty on a local build, where it is not worth a second pass.
+ARG CLIENT_VERSION=""
 LABEL org.opencontainers.image.title="redis-no-shell" \
       org.opencontainers.image.description="Shell-less Redis client for database consoles, built with TLS for ElastiCache." \
-      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.version="${CLIENT_VERSION}" \
+      com.fenleap.packaging.version="${VERSION}" \
       org.opencontainers.image.vendor="Fenleap" \
       org.opencontainers.image.licenses="Apache-2.0 AND BSD-3-Clause" \
       org.opencontainers.image.source="https://github.com/Fenleap/images" \

@@ -79,9 +79,13 @@ ENV HOME=/tmp \
     MYSQL_HISTFILE=/dev/null
 
 ARG VERSION=dev
+# The client version, discovered from the built binary by the release workflow
+# and fed back in. Empty on a local build, where it is not worth a second pass.
+ARG CLIENT_VERSION=""
 LABEL org.opencontainers.image.title="mysql-no-shell" \
       org.opencontainers.image.description="MySQL client with no shell, so the client's \\! escape cannot spawn one." \
-      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.version="${CLIENT_VERSION}" \
+      com.fenleap.packaging.version="${VERSION}" \
       org.opencontainers.image.vendor="Fenleap" \
       org.opencontainers.image.licenses="Apache-2.0 AND GPL-2.0-only" \
       org.opencontainers.image.source="https://github.com/Fenleap/images" \

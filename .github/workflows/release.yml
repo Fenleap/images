@@ -116,6 +116,19 @@ jobs:
       - name: Smoke test (release gate)
         run: ./shared/test/smoke.sh "ghcr.io/fenleap/${IMAGE}:test" "${IMAGE%%-*}"
 
+      # What people pin on is the client version, not our packaging number, so
+      # it is read out of the binary that just passed the smoke test rather than
+      # taken from the build argument — the argument says `mysql:8.4` was asked
+      # for, this says 8.4.11 arrived.
+      - name: Resolve client version
+        id: client
+        run: |
+          set -euo pipefail
+          exact=$(./shared/scripts/client-version.sh "ghcr.io/fenleap/${IMAGE}:test" "${IMAGE%%-*}")
+          echo "exact=${exact}"       >> "$GITHUB_OUTPUT"
+          echo "minor=${exact%.*}"    >> "$GITHUB_OUTPUT"
+          echo "Client version: ${exact} (moving tag ${exact%.*})"
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -133,10 +146,22 @@ jobs:
           push: true
           sbom: true
           provenance: mode=max
+          # Five tags, each answering a different question:
+          #   8.4.11         exactly this client
+          #   8.4            the current patch of this client series (moves)
+          #   8.4.11-1.0.0   this client packaged by this repo at this revision,
+          #                  which is the only one that is fully immutable
+          #   1.0.0          the packaging release on its own
+          #   latest         newest of everything
           tags: |
+            ghcr.io/fenleap/${{ env.IMAGE }}:${{ steps.client.outputs.exact }}
+            ghcr.io/fenleap/${{ env.IMAGE }}:${{ steps.client.outputs.minor }}
+            ghcr.io/fenleap/${{ env.IMAGE }}:${{ steps.client.outputs.exact }}-${{ env.VERSION }}
             ghcr.io/fenleap/${{ env.IMAGE }}:${{ env.VERSION }}
             ghcr.io/fenleap/${{ env.IMAGE }}:latest
-          build-args: VERSION=${{ env.VERSION }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            CLIENT_VERSION=${{ steps.client.outputs.exact }}
           cache-from: type=gha,scope=${{ env.IMAGE }}
 
       - name: Attest build provenance
@@ -162,8 +187,13 @@ jobs:
             docker pull ghcr.io/fenleap/${{ env.IMAGE }}:${{ env.VERSION }}
             ```
 
+            **Client version:** `${{ steps.client.outputs.exact }}`
             **Digest:** `${{ steps.push.outputs.digest }}`
             **Platforms:** linux/amd64, linux/arm64
+
+            Also published as `${{ steps.client.outputs.exact }}`,
+            `${{ steps.client.outputs.minor }}`,
+            `${{ steps.client.outputs.exact }}-${{ env.VERSION }}` and `latest`.
 
             Built from this tag, smoke-tested before publishing: the release
             gate asserts on the built image that no shell and no package
@@ -187,6 +217,6 @@ jobs:
       # rather than leaving someone to discover it from a pull failure.
       - name: Publishing note
         run: |
-          echo "::notice::Published ghcr.io/fenleap/${IMAGE}:${VERSION}"
+          echo "::notice::Published ghcr.io/fenleap/${IMAGE} client ${{ steps.client.outputs.exact }} (packaging ${VERSION})"
           echo "::notice::If this package is new, set its visibility to Public at" \
                "https://github.com/orgs/Fenleap/packages/container/${IMAGE}/settings"

@@ -14,9 +14,27 @@ in production. Each README says plainly what the image removes, what it does
 | [`redis-no-shell`](images/redis-no-shell) | Redis 7.4 client (TLS) with no shell | ~19 MB |
 
 ```
-docker pull ghcr.io/fenleap/mysql-no-shell:latest
-docker pull ghcr.io/fenleap/redis-no-shell:latest
+docker pull ghcr.io/fenleap/mysql-no-shell:8.4     # MySQL 8.4 client
+docker pull ghcr.io/fenleap/redis-no-shell:7.4     # Redis 7.4 client
 ```
+
+### Tags
+
+Tags name the **client version**, because that is what you actually depend on —
+our packaging number tells you nothing about whether your server will talk to it.
+
+| Tag | Means | Moves? |
+|---|---|---|
+| `8.4.11` | exactly this client version | no |
+| `8.4` | current patch of the 8.4 client series | yes |
+| `8.4.11-1.0.0` | this client, packaged by this repo at revision 1.0.0 | **never** |
+| `1.0.0` | the packaging release on its own | no |
+| `latest` | newest of everything | yes |
+
+Pin `8.4.11-1.0.0` when you want a bit-for-bit identical artifact — it is the
+only tag that pins both halves. `8.4` is the sensible default for a client you
+want kept patched. The client version is read out of the built binary during
+release, so a tag always describes what shipped rather than what was requested.
 
 ## Why "no shell"
 

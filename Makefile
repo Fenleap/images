@@ -18,11 +18,17 @@ IMAGES := $(notdir $(patsubst %/,%,$(dir $(wildcard images/*/Dockerfile))))
 
 export DOCKER_BUILDKIT := 1
 
-.PHONY: list lint build test push build-all test-all clean check-image
+.PHONY: list lint build test push build-all test-all clean check-image client-version
 
 list:
 	@echo "Images in this repository:"
 	@$(foreach i,$(IMAGES),echo "  $(REGISTRY)/$(i)";)
+
+# Which upstream client actually landed in a built image, as opposed to which
+# one the build argument asked for.
+client-version: check-image
+	@./shared/scripts/client-version.sh $(REGISTRY)/$(IMAGE):$(VERSION) \
+	  $(firstword $(subst -, ,$(IMAGE)))
 
 check-image:
 ifndef IMAGE
@@ -53,6 +59,9 @@ test-all: lint
 
 # buildx cannot --load a multi-platform result, so `make test` (single arch)
 # must pass before pushing.
+# Releases normally go through CI, which also tags by client version. This is
+# the escape hatch; it deliberately does not invent client-version tags, since
+# those must come from a tested artifact.
 push: check-image
 	$(DOCKER) buildx build -f images/$(IMAGE)/Dockerfile . \
 	  --platform $(PLATFORMS) --build-arg VERSION=$(VERSION) \
