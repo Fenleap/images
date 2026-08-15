@@ -72,7 +72,11 @@ jobs:
     permissions:
       contents: read
       packages: write # push to GHCR
-      id-token: write # build provenance attestation
+      id-token: write # sign the provenance
+      # attest-build-provenance writes the attestation back to the repository,
+      # which id-token alone does not allow — without this the push succeeds and
+      # only the attestation fails, which reads confusingly as a failed release.
+      attestations: write
     env:
       IMAGE: ${{ needs.resolve.outputs.image }}
       VERSION: ${{ needs.resolve.outputs.version }}
