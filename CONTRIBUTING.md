@@ -39,6 +39,16 @@ make test-all
 
 CI runs the same targets. A change that reintroduces a shell fails there.
 
+## Pull requests
+
+`main` is protected: changes land by pull request with an approving review from
+the owner, and every CI check must pass and be up to date with `main` first.
+That is not ceremony — a change here alters what people are already pulling.
+
+If your change touches a base image, the launcher's argument handling, or
+anything the smoke test asserts, say so explicitly in the PR description. Those
+are the changes that can quietly undo the reason these images exist.
+
 ## Releasing
 
 Images version independently. Tag `<image>-v<semver>`:
@@ -47,3 +57,8 @@ Images version independently. Tag `<image>-v<semver>`:
 git tag -a mysql-no-shell-v1.0.0 -m "mysql-no-shell 1.0.0"
 git push origin mysql-no-shell-v1.0.0
 ```
+
+Release tags are restricted to repository admins, and the workflow additionally
+refuses to publish for anyone outside `RELEASE_ACTORS`. Publishing builds both
+architectures, runs the smoke test as a gate, pushes with an SBOM and provenance
+attestation, and cuts a GitHub Release.

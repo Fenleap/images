@@ -129,6 +129,21 @@ Create `images/<name>/Dockerfile` and a `README.md` beside it. The Makefile and
 both workflows discover images from the directory listing, so nothing else needs
 editing. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Verifying what you pulled
+
+Every published image carries an SBOM and a signed build provenance
+attestation, so you can check it was built by this repository from the tag it
+claims — rather than trusting the name:
+
+```bash
+gh attestation verify oci://ghcr.io/fenleap/mysql-no-shell:1.0.0 --owner Fenleap
+docker buildx imagetools inspect ghcr.io/fenleap/mysql-no-shell:1.0.0
+```
+
+For an image whose entire value is what it does *not* contain, being auditable
+is most of the point: the Dockerfile, the launcher source and the test that
+enforces the claim are all in this repository.
+
 ## Releases
 
 Images are versioned independently — a rebuild of one should not bump another's
@@ -139,8 +154,28 @@ git tag -a mysql-no-shell-v1.0.0 -m "mysql-no-shell 1.0.0"
 git push origin mysql-no-shell-v1.0.0
 ```
 
-That builds `linux/amd64` and `linux/arm64`, runs the smoke test, and publishes
-with an SBOM and build provenance attestation.
+That builds `linux/amd64` and `linux/arm64`, runs the smoke test as a release
+gate, publishes to GHCR with an SBOM and provenance attestation, and cuts a
+GitHub Release carrying the digest and verification instructions.
+
+`workflow_dispatch` republishes an image without cutting a release — useful for
+rebuilding on a base-image CVE without inventing a new version.
+
+## Repository rules
+
+These images are published publicly and make a security claim, so the paths
+that change what people pull are deliberately narrow:
+
+| | |
+|---|---|
+| `main` | Protected. Pull request only, with an approving review from the owner ([CODEOWNERS](.github/CODEOWNERS)); all CI checks must pass and be up to date; linear history; no force pushes or deletions. Direct pushes are restricted to the owner. |
+| Release tags (`*-v*`) | A ruleset restricts creation, update and deletion to repository admins. |
+| Publishing | The release workflow refuses to run for anyone outside `RELEASE_ACTORS`, so `workflow_dispatch` cannot be used to publish by another route. |
+| Fork PRs | Workflows from external contributors require approval before they run. |
+| Workflow token | Read-only by default; each job requests only what it needs. |
+
+Contributions are welcome by pull request — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 

@@ -24,9 +24,14 @@ on:
 permissions:
   contents: read
 
+# Only the owner publishes. A ruleset stops anyone else creating a release tag;
+# this stops workflow_dispatch being used to reach the same place by another
+# route, which a ruleset cannot cover. Change RELEASE_ACTORS (a repository
+# variable, a JSON array of logins) to widen it.
 jobs:
   resolve:
     name: resolve target
+    if: contains(fromJSON(vars.RELEASE_ACTORS || '["Fenleap-Seif"]'), github.actor)
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.parse.outputs.image }}
@@ -70,7 +75,7 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # create the GitHub Release
       packages: write # push to GHCR
       id-token: write # sign the provenance
       # attest-build-provenance writes the attestation back to the repository,
@@ -140,6 +145,42 @@ jobs:
           subject-name: ghcr.io/fenleap/${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      # Only a tag has a release to attach to; a workflow_dispatch rebuild
+      # republishes the image without inventing a release for it.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ env.IMAGE }} ${{ env.VERSION }}
+          generate_release_notes: true
+          body: |
+            ## `ghcr.io/fenleap/${{ env.IMAGE }}:${{ env.VERSION }}`
+
+            ```
+            docker pull ghcr.io/fenleap/${{ env.IMAGE }}:${{ env.VERSION }}
+            ```
+
+            **Digest:** `${{ steps.push.outputs.digest }}`
+            **Platforms:** linux/amd64, linux/arm64
+
+            Built from this tag, smoke-tested before publishing: the release
+            gate asserts on the built image that no shell and no package
+            manager are present, that the client starts under
+            `--read-only --cap-drop ALL` as a non-root user, and that the
+            launcher refuses unknown subcommands and flags.
+
+            Verify the build provenance:
+
+            ```
+            gh attestation verify \
+              oci://ghcr.io/fenleap/${{ env.IMAGE }}:${{ env.VERSION }} \
+              --owner Fenleap
+            ```
+
+            See [images/${{ env.IMAGE }}](https://github.com/Fenleap/images/tree/${{ github.ref_name }}/images/${{ env.IMAGE }})
+            for what this image does — and does not — protect against.
 
       # A package inherits the repository's visibility on first publish, so a
       # brand new package can land private even from a public repo. Say so
