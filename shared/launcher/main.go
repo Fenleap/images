@@ -155,7 +155,27 @@ func runMySQL(argv []string) error {
 	if err != nil {
 		return err
 	}
-	return exec(mysqlBinary, mysqlArgs(conn, batch, statement))
+	return execWithEnv(mysqlBinary, mysqlArgs(conn, batch, statement), mysqlEnv(conn))
+}
+
+// mysqlEnv hands the client its password through MYSQL_PWD.
+//
+// In DSN mode the password exists nowhere else: it is a component of the
+// connection string, so parsing the DSN and not doing this leaves the client
+// connecting with no password at all — "Access denied ... (using password:
+// NO)". Fields mode already has MYSQL_PWD in the pod environment and is left
+// untouched, and an explicitly set MYSQL_PWD always wins over the DSN so an
+// operator can override without editing the connection string.
+//
+// It goes in the environment rather than on the command line on purpose:
+// /proc/<pid>/cmdline is readable by anything else in the pod, a process's
+// environment is not.
+func mysqlEnv(conn Connection) []string {
+	env := os.Environ()
+	if conn.Password != "" && os.Getenv("MYSQL_PWD") == "" {
+		env = append(env, "MYSQL_PWD="+conn.Password)
+	}
+	return env
 }
 
 // redisArgs builds the redis-cli invocation. A DSN is passed straight through,
@@ -207,7 +227,7 @@ func runRedis(argv []string) error {
 			break
 		}
 	}
-	return exec(redisBinary, redisArgs(Getenv, passthrough))
+	return execWithEnv(redisBinary, redisArgs(Getenv, passthrough), os.Environ())
 }
 
 // parseClientFlags reads the launcher's own flags. It is intentionally a hand
@@ -232,11 +252,13 @@ func parseClientFlags(argv []string) (batch bool, statement string, err error) {
 	return batch, statement, nil
 }
 
-// exec replaces this process with the client, so the client keeps PID 1, the
-// TTY, and the signal handling. No shell is involved and no child is spawned.
-func exec(binary string, args []string) error {
+// execWithEnv replaces this process with the client, so the client keeps PID 1,
+// the TTY, and the signal handling. No shell is involved and no child is
+// spawned. The environment is supplied by the caller so a DSN-derived password
+// can be added without it ever touching argv.
+func execWithEnv(binary string, args []string, env []string) error {
 	if _, statErr := os.Stat(binary); statErr != nil {
 		return fmt.Errorf("client %s is not present in this image", binary)
 	}
-	return syscall.Exec(binary, args, os.Environ())
+	return syscall.Exec(binary, args, env)
 }

@@ -19,10 +19,15 @@ type Connection struct {
 	Host string
 	Port string
 	User string
-	// Password is deliberately absent. Both clients read their password from
-	// the environment themselves (MYSQL_PWD / REDISCLI_AUTH), so the launcher
-	// never has to hold it, log it, or place it on a command line where it
-	// would be visible in /proc/<pid>/cmdline to anything else in the pod.
+
+	// Password is carried ONLY when it came from a DSN, where it is the sole
+	// place the credential exists — there is no separate MYSQL_PWD to fall back
+	// on. It is handed to the client through the environment, never through
+	// argv, because argv is world-readable via /proc/<pid>/cmdline to anything
+	// else in the pod while the environment of a running process is not.
+	//
+	// In fields mode this stays empty and the client reads MYSQL_PWD itself.
+	Password string
 }
 
 const defaultMySQLPort = "3306"
@@ -67,9 +72,11 @@ func ParseMySQLDSN(dsn string) (Connection, error) {
 		}
 	}
 
-	user := credentials
+	user, password := credentials, ""
 	if colon := strings.Index(credentials, ":"); colon != -1 {
-		user = credentials[:colon]
+		// First colon splits user from password, so a password containing ":"
+		// keeps everything after that first one.
+		user, password = credentials[:colon], credentials[colon+1:]
 	}
 
 	host, port := hostPort, defaultMySQLPort
@@ -83,7 +90,7 @@ func ParseMySQLDSN(dsn string) (Connection, error) {
 		port = defaultMySQLPort
 	}
 
-	return Connection{Host: host, Port: port, User: user}, nil
+	return Connection{Host: host, Port: port, User: user, Password: password}, nil
 }
 
 // MySQLConnection resolves the MySQL endpoint from the environment, preferring

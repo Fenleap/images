@@ -48,16 +48,72 @@ func TestParseMySQLDSNRejects(t *testing.T) {
 	}
 }
 
-func TestParseMySQLDSNNeverReturnsPassword(t *testing.T) {
-	// The struct has no password field on purpose; this guards against someone
-	// adding one and leaking it onto a command line later.
-	conn, err := ParseMySQLDSN("app:sup3rsecret@tcp(db:3306)/x")
+// Regression: the password lives INSIDE the DSN, so dropping it during parsing
+// left the client connecting with nothing —
+// "Access denied for user 'x'@'ip' (using password: NO)". Redis never showed
+// this because redis-cli takes the DSN verbatim via -u.
+func TestParseMySQLDSNKeepsThePassword(t *testing.T) {
+	cases := []struct{ dsn, want string }{
+		{"app:sup3rsecret@tcp(db:3306)/x", "sup3rsecret"},
+		{"mysql://app:sup3rsecret@db:3306/x", "sup3rsecret"},
+		{"app:p@ssw0rd@tcp(db:3306)/x", "p@ssw0rd"},
+		{"app:pass:word@tcp(db:3306)/x", "pass:word"},
+	}
+	for _, tc := range cases {
+		conn, err := ParseMySQLDSN(tc.dsn)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dsn, err)
+		}
+		if conn.Password != tc.want {
+			t.Fatalf("%s: got password %q, want %q", tc.dsn, conn.Password, tc.want)
+		}
+	}
+}
+
+func TestParseMySQLDSNWithoutAPassword(t *testing.T) {
+	conn, err := ParseMySQLDSN("app@tcp(db:3306)/x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{conn.Host, conn.Port, conn.User} {
-		if strings.Contains(field, "sup3rsecret") {
-			t.Fatalf("password leaked into %q", field)
+	if conn.User != "app" || conn.Password != "" {
+		t.Fatalf("got user=%q password=%q", conn.User, conn.Password)
+	}
+}
+
+func TestMySQLEnvCarriesTheDSNPassword(t *testing.T) {
+	t.Setenv("MYSQL_PWD", "")
+	env := mysqlEnv(Connection{Host: "h", Port: "3306", User: "u", Password: "fromdsn"})
+
+	var found string
+	for _, e := range env {
+		if strings.HasPrefix(e, "MYSQL_PWD=") {
+			found = strings.TrimPrefix(e, "MYSQL_PWD=")
+		}
+	}
+	if found != "fromdsn" {
+		t.Fatalf("MYSQL_PWD not set from the DSN, got %q", found)
+	}
+}
+
+func TestMySQLEnvDoesNotOverrideAnExplicitPassword(t *testing.T) {
+	// Fields mode already supplies MYSQL_PWD from the Secret, and an operator
+	// overriding it must win over whatever a stale DSN carries.
+	t.Setenv("MYSQL_PWD", "fromsecret")
+	env := mysqlEnv(Connection{Host: "h", Port: "3306", User: "u", Password: "fromdsn"})
+	for _, e := range env {
+		if e == "MYSQL_PWD=fromdsn" {
+			t.Fatal("DSN password overrode an explicitly set MYSQL_PWD")
+		}
+	}
+}
+
+func TestPasswordNeverReachesArgv(t *testing.T) {
+	// The invariant that actually matters: /proc/<pid>/cmdline is readable by
+	// anything else in the pod; a process's environment is not.
+	conn := Connection{Host: "h", Port: "3306", User: "u", Password: "sup3rsecret"}
+	for _, a := range mysqlArgs(conn, true, "SELECT 1") {
+		if strings.Contains(a, "sup3rsecret") {
+			t.Fatalf("password leaked into argv: %q", a)
 		}
 	}
 }
