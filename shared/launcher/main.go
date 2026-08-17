@@ -122,7 +122,7 @@ func hasCA() bool {
 // client's default ssl-mode is PREFERRED. VERIFY_CA is what actually validates
 // an RDS endpoint against the mounted bundle; without a bundle we still require
 // encryption, we just cannot authenticate the peer.
-func mysqlArgs(conn Connection, batch bool, statement string) []string {
+func mysqlArgs(conn Connection, flags clientFlags) []string {
 	args := []string{"mysql", "-h", conn.Host, "-P", conn.Port}
 	if conn.User != "" {
 		args = append(args, "-u", conn.User)
@@ -132,7 +132,13 @@ func mysqlArgs(conn Connection, batch bool, statement string) []string {
 	} else {
 		args = append(args, "--ssl-mode=REQUIRED")
 	}
-	if batch {
+	// -D selects the default schema. Without it the client connects with none,
+	// and an unqualified query fails with
+	// "ERROR 1046 (3D000): No database selected".
+	if flags.database != "" {
+		args = append(args, "-D", flags.database)
+	}
+	if flags.batch {
 		// --batch emits tab-separated rows and escapes tab/newline/backslash
 		// inside values, so every row stays on one line. --raw would disable
 		// that escaping and a single multi-line value would corrupt the rest
@@ -140,22 +146,27 @@ func mysqlArgs(conn Connection, batch bool, statement string) []string {
 		// result set in the client.
 		args = append(args, "--batch", "--quick", "--default-character-set=utf8mb4")
 	}
-	if statement != "" {
-		args = append(args, "-e", statement)
+	if flags.statement != "" {
+		args = append(args, "-e", flags.statement)
 	}
 	return args
 }
 
 func runMySQL(argv []string) error {
-	batch, statement, err := parseClientFlags(argv)
+	flags, err := parseClientFlags(argv)
 	if err != nil {
 		return err
+	}
+	// A DSN usually names a database (…/orders) and DB_NAME can supply one for
+	// a fields-mode target, but an explicit --database always wins.
+	if flags.database == "" {
+		flags.database = Getenv("DB_NAME")
 	}
 	conn, err := MySQLConnection(Getenv)
 	if err != nil {
 		return err
 	}
-	return execWithEnv(mysqlBinary, mysqlArgs(conn, batch, statement), mysqlEnv(conn))
+	return execWithEnv(mysqlBinary, mysqlArgs(conn, flags), mysqlEnv(conn))
 }
 
 // mysqlEnv hands the client its password through MYSQL_PWD.
@@ -230,26 +241,40 @@ func runRedis(argv []string) error {
 	return execWithEnv(redisBinary, redisArgs(Getenv, passthrough), os.Environ())
 }
 
+// clientFlags are the launcher's own flags, kept separate from the client's.
+type clientFlags struct {
+	batch     bool
+	statement string
+	database  string
+}
+
 // parseClientFlags reads the launcher's own flags. It is intentionally a hand
 // written loop rather than the flag package: it must accept a statement that
 // begins with "-" without treating it as a flag, and must reject anything it
 // does not recognise instead of forwarding it to the client.
-func parseClientFlags(argv []string) (batch bool, statement string, err error) {
+func parseClientFlags(argv []string) (clientFlags, error) {
+	var f clientFlags
 	for i := 0; i < len(argv); i++ {
 		switch argv[i] {
 		case "--batch":
-			batch = true
+			f.batch = true
 		case "--statement":
 			if i+1 >= len(argv) {
-				return false, "", fmt.Errorf("--statement requires a value")
+				return clientFlags{}, fmt.Errorf("--statement requires a value")
 			}
 			i++
-			statement = argv[i]
+			f.statement = argv[i]
+		case "--database":
+			if i+1 >= len(argv) {
+				return clientFlags{}, fmt.Errorf("--database requires a value")
+			}
+			i++
+			f.database = argv[i]
 		default:
-			return false, "", fmt.Errorf("unsupported argument %q", argv[i])
+			return clientFlags{}, fmt.Errorf("unsupported argument %q", argv[i])
 		}
 	}
-	return batch, statement, nil
+	return f, nil
 }
 
 // execWithEnv replaces this process with the client, so the client keeps PID 1,

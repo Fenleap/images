@@ -111,7 +111,7 @@ func TestPasswordNeverReachesArgv(t *testing.T) {
 	// The invariant that actually matters: /proc/<pid>/cmdline is readable by
 	// anything else in the pod; a process's environment is not.
 	conn := Connection{Host: "h", Port: "3306", User: "u", Password: "sup3rsecret"}
-	for _, a := range mysqlArgs(conn, true, "SELECT 1") {
+	for _, a := range mysqlArgs(conn, clientFlags{batch: true, statement: "SELECT 1"}) {
 		if strings.Contains(a, "sup3rsecret") {
 			t.Fatalf("password leaked into argv: %q", a)
 		}
@@ -163,7 +163,7 @@ func TestMySQLConnectionDefaultsAndErrors(t *testing.T) {
 func TestMySQLArgsNeverCarryAPassword(t *testing.T) {
 	// MYSQL_PWD is read by the client itself. If it ever reached argv it would
 	// be world-readable via /proc/<pid>/cmdline inside the pod.
-	args := mysqlArgs(Connection{Host: "h", Port: "3306", User: "u"}, false, "")
+	args := mysqlArgs(Connection{Host: "h", Port: "3306", User: "u"}, clientFlags{})
 	for _, a := range args {
 		if strings.Contains(a, "-p") && a != "-P" {
 			t.Fatalf("password-ish flag in argv: %q", a)
@@ -176,7 +176,7 @@ func TestMySQLArgsNeverCarryAPassword(t *testing.T) {
 }
 
 func TestMySQLArgsBatchMode(t *testing.T) {
-	args := mysqlArgs(Connection{Host: "h", Port: "3306"}, true, "SELECT 1")
+	args := mysqlArgs(Connection{Host: "h", Port: "3306"}, clientFlags{batch: true, statement: "SELECT 1"})
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"--batch", "--quick", "--default-character-set=utf8mb4"} {
 		if !strings.Contains(joined, want) {
@@ -193,7 +193,7 @@ func TestMySQLArgsBatchMode(t *testing.T) {
 }
 
 func TestMySQLArgsOmitsUserWhenUnset(t *testing.T) {
-	args := mysqlArgs(Connection{Host: "h", Port: "3306"}, false, "")
+	args := mysqlArgs(Connection{Host: "h", Port: "3306"}, clientFlags{})
 	if strings.Contains(strings.Join(args, " "), "-u") {
 		t.Fatal("expected no -u when no username is configured")
 	}
@@ -243,24 +243,32 @@ func TestRedisArgsKeepsCommandTokensSeparate(t *testing.T) {
 }
 
 func TestParseClientFlags(t *testing.T) {
-	batch, stmt, err := parseClientFlags([]string{"--batch", "--statement", "SELECT 1"})
-	if err != nil || !batch || stmt != "SELECT 1" {
-		t.Fatalf("got batch=%v stmt=%q err=%v", batch, stmt, err)
+	f, err := parseClientFlags([]string{"--batch", "--statement", "SELECT 1"})
+	if err != nil || !f.batch || f.statement != "SELECT 1" {
+		t.Fatalf("got %+v err=%v", f, err)
 	}
 
 	// A statement starting with "-" must not be mistaken for a flag.
-	_, stmt, err = parseClientFlags([]string{"--statement", "-- not a flag"})
-	if err != nil || stmt != "-- not a flag" {
-		t.Fatalf("got stmt=%q err=%v", stmt, err)
+	f, err = parseClientFlags([]string{"--statement", "-- not a flag"})
+	if err != nil || f.statement != "-- not a flag" {
+		t.Fatalf("got %+v err=%v", f, err)
+	}
+
+	f, err = parseClientFlags([]string{"--database", "orders", "--batch"})
+	if err != nil || f.database != "orders" || !f.batch {
+		t.Fatalf("got %+v err=%v", f, err)
 	}
 
 	// Anything unrecognised is refused rather than forwarded to the client,
 	// so a caller cannot smuggle in client flags such as --pager.
-	if _, _, err := parseClientFlags([]string{"--pager=sh -c id"}); err == nil {
+	if _, err := parseClientFlags([]string{"--pager=sh -c id"}); err == nil {
 		t.Fatal("expected unknown arguments to be rejected")
 	}
-	if _, _, err := parseClientFlags([]string{"--statement"}); err == nil {
+	if _, err := parseClientFlags([]string{"--statement"}); err == nil {
 		t.Fatal("expected an error for a missing --statement value")
+	}
+	if _, err := parseClientFlags([]string{"--database"}); err == nil {
+		t.Fatal("expected an error for a missing --database value")
 	}
 }
 
@@ -274,5 +282,31 @@ func TestTruthy(t *testing.T) {
 		if truthy(no) {
 			t.Fatalf("%q should not be truthy", no)
 		}
+	}
+}
+
+// Regression: without -D the client connects with no default schema and an
+// unqualified query fails with "ERROR 1046 (3D000): No database selected".
+func TestMySQLArgsSelectsTheDatabase(t *testing.T) {
+	args := mysqlArgs(Connection{Host: "h", Port: "3306"},
+		clientFlags{database: "orders", batch: true, statement: "SELECT 1"})
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-D orders") {
+		t.Fatalf("expected -D orders in %q", joined)
+	}
+	// A schema name is its own argv entry, so a name needing quoting cannot
+	// run into the next flag.
+	for i, a := range args {
+		if a == "-D" && args[i+1] != "orders" {
+			t.Fatalf("database not passed as a discrete argument: %q", args)
+		}
+	}
+}
+
+func TestMySQLArgsOmitsDatabaseWhenUnset(t *testing.T) {
+	args := mysqlArgs(Connection{Host: "h", Port: "3306"}, clientFlags{})
+	if strings.Contains(strings.Join(args, " "), "-D") {
+		t.Fatal("expected no -D when no database is configured")
 	}
 }

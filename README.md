@@ -75,6 +75,7 @@ Both are handled by `dbclient`, the only other binary in these images:
 ```
 dbclient idle                             keep the container alive
 dbclient mysql                            interactive session
+dbclient mysql --database <db>            select a default schema
 dbclient mysql --batch --statement <SQL>  one statement, TSV on stdout
 dbclient redis                            interactive session
 dbclient redis -- GET mykey               one command, raw output

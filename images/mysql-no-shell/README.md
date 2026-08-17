@@ -34,10 +34,15 @@ execute.
 | `DB_HOST`, `DB_PORT`, `DB_USER` | Discrete connection fields |
 | `DB_DSN` | Connection string, parsed inside the container |
 | `MYSQL_PWD` | Password — read by the client itself, never placed on a command line |
+| `DB_NAME` | Default schema, when `--database` is not given |
 
 `DB_DSN` accepts both `user:pass@tcp(host:port)/db` and
 `[scheme://]user:pass@host:port/db`. It is split on the *first* colon and the
 *last* `@`, so passwords containing `:` or `@` survive.
+
+Without a default schema the client connects with none, and an unqualified
+query fails with `ERROR 1046 (3D000): No database selected`. Set `DB_NAME`, pass
+`--database`, or qualify names as `schema.table`.
 
 A CA bundle at `/etc/db-tools/ca.pem` is detected automatically and switches the
 client to `--ssl-ca=... --ssl-mode=VERIFY_CA`. Without one the client still
@@ -49,6 +54,7 @@ PREFERRED.
 
 ```
 dbclient mysql                            interactive session
+dbclient mysql --database <db>            select a default schema (-D)
 dbclient mysql --batch --statement <SQL>  one statement, TSV on stdout
 dbclient idle                             keep the container alive
 ```
